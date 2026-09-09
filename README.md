@@ -8,3 +8,15 @@ These data exist in the form of data silos making operational analytics difficul
 ## Solution
 Build a metadata-driven framework to create a scalable pipeline which takes data from its sources to ready-to-query form.
 Create interactive dashboards and Genie AI interface for business users to query data easily. 
+
+## Architecture
+### Data Sources
+### Data Ingestion
+### Data Transformation
+### Data Orchestration
+### Data Governance
+### Data Comsumption
+
+## Good DE practices
+### Setting up Secret Scope
+### Using Medallion Architecture
