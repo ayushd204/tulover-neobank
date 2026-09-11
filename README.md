@@ -32,7 +32,6 @@ The project demonstrates both sides of data engineering: moving data reliably th
 ![master_job](assets/master_job.png)
 ![silver2gold](assets/silver_to_gold.png)
 ![src2bronze](assets/source_to_bronze2.png)
-![src2bronze](assets/source_to_bronze.png)
 ![src2silver](assets/source_to_silver.png)
 
 ## Engineering highlights
