@@ -4,7 +4,7 @@
 
 Neobanks like REVOLUT produce large volume of data on a day-to-day basis. This project tulover (inspired from REVOLUT spelled backwards) brings the data together through a reusable ingestion framework and a Bronze → Silver → Gold medallion architecture, turning fragmented source data into customer, branch, payment, and risk analytics.
 
-> **6 source datasets · 3 loading strategies
+> \*\*6 source datasets · 3 loading strategies
 
 [Architecture](#architecture) · [Engineering highlights](#engineering-highlights) · [Analytics](#banking-data-products) · [Run the project](#run-the-project) · [Code map](#repository-map)
 
@@ -27,31 +27,37 @@ The project demonstrates both sides of data engineering: moving data reliably th
 
 **Execution environment:** Databricks notebooks with Spark, Delta Lake, `dbutils`, and a Unity Catalog namespace rooted at `banking`. The repository contains notebook source exports and sample data; workspace jobs and dashboard definitions are not included.
 
+## Databricks Workflow
+
+![master_job](assets/master_job.png)
+![silver2gold](assets/silver_to_gold.png)
+![src2bronze](assets/source_to_bronze2.png)
+![src2bronze](assets/source_to_bronze.png)
+![src2silver](assets/source_to_silver.png)
+
 ## Engineering highlights
 
 ### Configuration driving the pipeline
 
 The same ingestion and Silver notebooks process multiple tables. Source details, keys, loading behavior, and execution order live in Delta metadata tables instead of separate pipelines for every dataset.
 
-| Control table | Responsibility |
-| --- | --- |
-| `banking.metadata.tables` | Source locations, target schemas, active flags, and load order |
-| `banking.metadata.table_parameters` | Per-table `load_type`, `primary_key`, and `watermark_column` |
-| `banking.metadata.table_watermarks` | Last processed watermark used for incremental selection |
-| `banking.metadata.pipeline_runs` | Run and table identifiers, timestamps, status, record counts, and errors |
-
-
+| Control table                       | Responsibility                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------ |
+| `banking.metadata.tables`           | Source locations, target schemas, active flags, and load order           |
+| `banking.metadata.table_parameters` | Per-table `load_type`, `primary_key`, and `watermark_column`             |
+| `banking.metadata.table_watermarks` | Last processed watermark used for incremental selection                  |
+| `banking.metadata.pipeline_runs`    | Run and table identifiers, timestamps, status, record counts, and errors |
 
 ### Loading strategies match the data
 
-| Dataset | Source | Silver strategy | Key | Watermark |
-| --- | --- | --- | --- | --- |
-| `customers` | SQL Server | `MERGE` | `customer_id` | `updated_at` |
-| `accounts` | SQL Server | `MERGE` | `account_id` | `updated_at` |
-| `transactions` | SQL Server | `APPEND` | `txn_id` | `txn_timestamp` |
-| `branches` | SQL Server | `FULL` | `branch_code` | — |
-| `credit_bureau_reports` | CSV files | `MERGE` | `customer_id` | `bureau_pull_date` |
-| `payment_gateway_logs` | CSV files | `APPEND` | `txn_id` | `processed_timestamp` |
+| Dataset                 | Source     | Silver strategy | Key           | Watermark             |
+| ----------------------- | ---------- | --------------- | ------------- | --------------------- |
+| `customers`             | SQL Server | `MERGE`         | `customer_id` | `updated_at`          |
+| `accounts`              | SQL Server | `MERGE`         | `account_id`  | `updated_at`          |
+| `transactions`          | SQL Server | `APPEND`        | `txn_id`      | `txn_timestamp`       |
+| `branches`              | SQL Server | `FULL`          | `branch_code` | —                     |
+| `credit_bureau_reports` | CSV files  | `MERGE`         | `customer_id` | `bureau_pull_date`    |
+| `payment_gateway_logs`  | CSV files  | `APPEND`        | `txn_id`      | `processed_timestamp` |
 
 - **FULL:** overwrite the Silver table with the selected Bronze data.
 - **APPEND:** insert newly selected records into Silver.
@@ -65,58 +71,66 @@ For watermark-based tables, the pipeline updates the stored maximum watermark af
 
 The [notification notebook](email_notifications/email_notifications/email_notification.py) joins audit records with table metadata, builds an HTML execution summary, and sends it through Gmail SMTP using a credential retrieved from a Databricks secret scope.
 
+### Secrets Retrieved at Runtime
+
+Tulover’s ingestion and notification notebooks retrieve credentials from the **Databricks secret scope `neobank-scope`**. The notebooks reference named keys, and the credential values are resolved when the job runs. This demonstrates the separation of pipeline logic and credential storage used in production deployments.
+
+| Secret key | Stored value | Used by |
+| --- | --- | --- |
+| `sqlserver-connection-json` | JSON connection configuration containing `host`, `port`, `database`, `user`, `password`, and `driver` | Source-to-Bronze JDBC ingestion |
+| `gmail-notification` | Gmail app password for SMTP authentication | Pipeline execution email notifications |
+
+
+The [dummy setup notebook](source_to_silver/source_to_silver/setup_secret_scope_dummy.py) illustrates writing named secrets through the Databricks Secrets REST API. It assumes the scope already exists. The ingestion notebook currently embeds its JDBC host and port; retrieving the configuration does not yet make every connection setting environment-independent and retreiving the secrets in a way like that to production-grade environment.
+
 ### Gold transformations answer business questions
 
 The [Gold driver](silver_to_gold/silver_to_gold/master_driver_src_to_gold.py) resolves transformation notebook paths from metadata, executes them, and records their returned row counts. <b>SQL models use CTEs, joins, aggregations, conditional metrics, and window functions to publish business-facing tables.<b>
 
 ## Banking data products
 
-| Gold table | Grain | What it makes possible |
-| --- | --- | --- |
-| [`customer_360`](silver_to_gold/silver_to_gold/gold_transformations/customer_360.sql) | Customer | Combine account balances, transaction activity, branch details, latest credit information, and balance-based segments |
-| [`branch_performance`](silver_to_gold/silver_to_gold/gold_transformations/branch_performance.sql) | Branch | Compare customer counts, accounts, deposits, and transaction volume |
-| [`transaction_summary`](silver_to_gold/silver_to_gold/gold_transformations/transaction_summary.sql) | Transaction date × gateway × device | Analyze successful and failed payments alongside average processing time |
-| [`tulover_daily_KPI`](silver_to_gold/silver_to_gold/gold_transformations/tulover_daily_KPI.sql) | Transaction date | View daily transaction metrics alongside current bank-wide customer, account, and credit aggregates |
-| [`risk_customer_summary`](silver_to_gold/silver_to_gold/gold_transformations/risk_customer_summary.sql) | Risk grade | Summarize credit scores, external loan counts, and overdue amounts |
-
+| Gold table                                                                                              | Grain                               | What it makes possible                                                                                                |
+| ------------------------------------------------------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| [`customer_360`](silver_to_gold/silver_to_gold/gold_transformations/customer_360.sql)                   | Customer                            | Combine account balances, transaction activity, branch details, latest credit information, and balance-based segments |
+| [`branch_performance`](silver_to_gold/silver_to_gold/gold_transformations/branch_performance.sql)       | Branch                              | Compare customer counts, accounts, deposits, and transaction volume                                                   |
+| [`transaction_summary`](silver_to_gold/silver_to_gold/gold_transformations/transaction_summary.sql)     | Transaction date × gateway × device | Analyze successful and failed payments alongside average processing time                                              |
+| [`tulover_daily_KPI`](silver_to_gold/silver_to_gold/gold_transformations/tulover_daily_KPI.sql)         | Transaction date                    | View daily transaction metrics alongside current bank-wide customer, account, and credit aggregates                   |
+| [`risk_customer_summary`](silver_to_gold/silver_to_gold/gold_transformations/risk_customer_summary.sql) | Risk grade                          | Summarize credit scores, external loan counts, and overdue amounts                                                    |
 
 Interactive dashboards and a Genie natural-language interface are planned consumers of these Gold tables.
 
 ## Skills demonstrated
 
-| Skill | Evidence in this project |
-| --- | --- |
-| **Lakehouse architecture** | Separate raw ingestion, load-managed tables, and analytical models using Delta Lake |
-| **Python and PySpark** | Parameterized notebooks, JDBC reads, DataFrame transformations, and Delta merge operations |
-| **Advanced SQL and data modeling** | Customer-level pre-aggregation, latest-report selection with `ROW_NUMBER`, and explicit analytical grains |
-| **Incremental processing** | Source-side watermark filtering, file checkpoints, and post-Silver watermark updates |
-| **Metadata framework design** | Separate table registration, extensible key-value parameters, progress tracking, and execution audit tables |
-| **Orchestration building blocks** | Notebook widgets, task-value handoffs, configurable ordering, and a metadata-driven Gold dispatcher |
-| **Operational observability** | Run-level correlation, table status, processing counts, error capture, and HTML notification summaries |
-| **Platform integration** | SQL Server connectivity, Unity Catalog tables and volumes, and runtime secret retrieval |
+| Skill                              | Evidence in this project                                                                                    |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **Lakehouse architecture**         | Separate raw ingestion, load-managed tables, and analytical models using Delta Lake                         |
+| **Python and PySpark**             | Parameterized notebooks, JDBC reads, DataFrame transformations, and Delta merge operations                  |
+| **Advanced SQL and data modeling** | Customer-level pre-aggregation, latest-report selection with `ROW_NUMBER`, and explicit analytical grains   |
+| **Incremental processing**         | Source-side watermark filtering, file checkpoints, and post-Silver watermark updates                        |
+| **Metadata framework design**      | Separate table registration, extensible key-value parameters, progress tracking, and execution audit tables |
+| **Orchestration building blocks**  | Notebook widgets, task-value handoffs, configurable ordering, and a metadata-driven Gold dispatcher         |
+| **Operational observability**      | Run-level correlation, table status, processing counts, error capture, and HTML notification summaries      |
+| **Platform integration**           | SQL Server connectivity, Unity Catalog tables and volumes, and runtime secret retrieval                     |
+| **Secret management**             | Named secret keys, JSON credential retrieval, and shared scope integration for JDBC and SMTP                |
 
 ## Sample data
 
 The included fixtures provide **42,504 records across six datasets** for exploring the pipeline:
 
-| Dataset | Records |
-| --- | ---: |
-| Branches | 4 |
-| Customers | 4,000 |
-| Accounts | 4,500 |
-| Transactions | 15,000 |
-| Credit bureau reports | 4,000 |
-| Payment gateway logs | 15,000 |
-
+| Dataset               | Records |
+| --------------------- | ------: |
+| Branches              |       4 |
+| Customers             |   4,000 |
+| Accounts              |   4,500 |
+| Transactions          |  15,000 |
+| Credit bureau reports |   4,000 |
+| Payment gateway logs  |  15,000 |
 
 ## Run the project
-
 
 Use a Databricks workspace with compute supporting Spark, Delta Lake, Unity Catalog, and Auto Loader. The notebooks require access to a SQL Server or Azure SQL database, the Microsoft SQL Server JDBC driver, and permission to create the `banking` catalog, schemas, and landing volume.
 
 Import the `.py` and `.sql` files as Databricks notebooks, preserving the Gold driver’s relative `gold_transformations/` folder. These exports use notebook cells and Databricks utilities rather than a standalone Python entry point.
-
-
 
 ## Repository map
 
@@ -153,5 +167,3 @@ The repository demonstrates an end-to-end lakehouse framework. Production harden
 - **Observability:** extend the combined source-to-Silver audit entry into separate layer metrics and capture actual insert/update counts. Current Silver counts represent selected input records.
 
 - **Governance and consumption:** define access policies and PII masking, then add dashboards and Genie configuration for the Gold models.
-
-
